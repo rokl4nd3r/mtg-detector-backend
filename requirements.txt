@@ -1,0 +1,6 @@
+streamlit>=1.31
+openai>=1.40
+pillow>=10.0
+numpy>=1.26
+opencv-python-headless>=4.9
+requests>=2.31
