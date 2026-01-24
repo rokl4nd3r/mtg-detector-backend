@@ -32,3 +32,8 @@ tmp/
 .streamlit/secrets.toml
 **/.streamlit/secrets.toml
 !.streamlit/secrets.toml.example
+dataset/
+*.jsonl
+*.jpg
+*.jpeg
+*.png
