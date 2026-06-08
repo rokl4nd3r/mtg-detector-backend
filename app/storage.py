@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 import hashlib
 import os
 import re
 import secrets
-from typing import Tuple
+from typing import Iterator, Tuple
 from zoneinfo import ZoneInfo
 from datetime import datetime
 
@@ -94,11 +95,16 @@ class Storage:
     staging_dir: Path
     dataset_dir: Path
     index_jsonl: Path
-    max_upload_bytes: int  # total por request (front+back)
+    max_upload_bytes: int
     timezone: str
+
+    @property
+    def upload_lock_path(self) -> Path:
+        return self.root / ".upload.lock"
 
     def init_layout(self) -> None:
         ensure_dirs(
+            self.root,
             self.staging_dir,
             self.dataset_dir / "nm",
             self.dataset_dir / "sp",
@@ -109,6 +115,17 @@ class Storage:
         if not self.index_jsonl.exists():
             self.index_jsonl.parent.mkdir(parents=True, exist_ok=True)
             self.index_jsonl.touch()
+        self.upload_lock_path.touch(exist_ok=True)
+
+    @contextmanager
+    def upload_lock(self) -> Iterator[None]:
+        self.upload_lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.upload_lock_path, "a+", encoding="utf-8") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
     def make_dataset_id(self, device: str, seq: int | None, capture_id: str | None = None) -> Tuple[str, str, str]:
         dev = sanitize_device(device)
@@ -125,11 +142,11 @@ class Storage:
         dataset_id = f"{stamp}_{dev}_{seq6}"
         return dataset_id, dev, seq6
 
-    def find_existing_by_dataset_id(self, dataset_id: str) -> ExistingDataset | None:
+    def iter_index_entries(self) -> Iterator[dict]:
         import json
 
-        if not dataset_id or not self.index_jsonl.exists():
-            return None
+        if not self.index_jsonl.exists():
+            return
 
         with open(self.index_jsonl, "r", encoding="utf-8") as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_SH)
@@ -142,22 +159,60 @@ class Storage:
                         obj = json.loads(raw)
                     except Exception:
                         continue
-                    if obj.get("dataset_id") == dataset_id or obj.get("capture_id") == dataset_id:
-                        front = str(obj.get("front", ""))
-                        back = str(obj.get("back", ""))
-                        if not front or not back:
-                            continue
-                        return ExistingDataset(
-                            dataset_id=str(obj.get("dataset_id") or dataset_id),
-                            grade=str(obj.get("grade") or obj.get("final_grade") or ""),
-                            front=front,
-                            back=back,
-                            sha256_front=str(obj.get("sha256_front") or ""),
-                            sha256_back=str(obj.get("sha256_back") or ""),
-                        )
+                    if isinstance(obj, dict):
+                        yield obj
             finally:
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+    def find_existing_by_dataset_id(self, dataset_id: str) -> ExistingDataset | None:
+        if not dataset_id:
+            return None
+
+        for obj in self.iter_index_entries():
+            if obj.get("dataset_id") == dataset_id or obj.get("capture_id") == dataset_id:
+                front = str(obj.get("front", ""))
+                back = str(obj.get("back", ""))
+                if not front or not back:
+                    continue
+                return ExistingDataset(
+                    dataset_id=str(obj.get("dataset_id") or dataset_id),
+                    grade=str(obj.get("grade") or obj.get("final_grade") or ""),
+                    front=front,
+                    back=back,
+                    sha256_front=str(obj.get("sha256_front") or ""),
+                    sha256_back=str(obj.get("sha256_back") or ""),
+                )
         return None
+
+    def dataset_stats(self) -> dict:
+        counts = {"nm": 0, "sp": 0, "mp": 0, "hp": 0, "damaged": 0, "unknown": 0}
+        bytes_front = 0
+        bytes_back = 0
+        total = 0
+        last_ts = None
+
+        for obj in self.iter_index_entries():
+            total += 1
+            grade = str(obj.get("final_grade") or obj.get("grade") or "unknown")
+            if grade not in counts:
+                grade = "unknown"
+            counts[grade] += 1
+            bytes_front += int(obj.get("bytes_front") or 0)
+            bytes_back += int(obj.get("bytes_back") or 0)
+            ts = obj.get("ts_server")
+            if ts:
+                last_ts = ts
+
+        return {
+            "total": total,
+            "counts": counts,
+            "bytes_front": bytes_front,
+            "bytes_back": bytes_back,
+            "bytes_total": bytes_front + bytes_back,
+            "last_ts_server": last_ts,
+            "index_jsonl": str(self.index_jsonl),
+            "dataset_dir": str(self.dataset_dir),
+        }
 
     def _write_stream_to_file(self, upload_file, tmp_path: Path, max_bytes: int) -> SavedFile:
         if max_bytes <= 0:
