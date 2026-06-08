@@ -29,7 +29,7 @@ def create_app() -> FastAPI:
     )
     storage.init_layout()
 
-    app = FastAPI(title="MTG Dataset Collector Backend", version="1.0.0")
+    app = FastAPI(title="MTG Dataset Collector Backend", version="1.1.0")
 
     @app.get("/health")
     def health():
@@ -50,14 +50,30 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
         try:
-            grade = normalize_grade(m.grade)
+            grade = normalize_grade(m.final_grade or m.grade)
+            front_grade = normalize_grade(m.front_grade or grade)
+            back_grade = normalize_grade(m.back_grade or grade)
+            final_grade = normalize_grade(m.final_grade or grade)
         except Exception as e:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-        dataset_id, dev_safe, seq6 = storage.make_dataset_id(m.device, m.seq)
+        dataset_id, dev_safe, seq6 = storage.make_dataset_id(m.device, m.seq, capture_id=m.capture_id)
+
+        existing = storage.find_existing_by_dataset_id(dataset_id)
+        if existing is not None:
+            return UploadResponse(
+                dataset_id=existing.dataset_id,
+                grade=existing.grade or grade,
+                front_path=existing.front,
+                back_path=existing.back,
+                sha256_front=existing.sha256_front,
+                sha256_back=existing.sha256_back,
+                indexed=True,
+                duplicate=True,
+            )
 
         try:
-            saved_front, saved_back = storage.save_pair(front, back, grade, dataset_id)
+            saved_front, saved_back = storage.save_pair(front, back, final_grade, dataset_id)
         except Exception as e:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -66,7 +82,11 @@ def create_app() -> FastAPI:
             "ts_client": m.ts,
             "device": dev_safe,
             "seq": seq6,
-            "grade": grade,
+            "capture_id": m.capture_id or dataset_id,
+            "grade": final_grade,
+            "front_grade": front_grade,
+            "back_grade": back_grade,
+            "final_grade": final_grade,
             "dataset_id": dataset_id,
             "front": storage.relpath_from_root(saved_front.final_path),
             "back": storage.relpath_from_root(saved_back.final_path),
@@ -84,12 +104,13 @@ def create_app() -> FastAPI:
 
         return UploadResponse(
             dataset_id=dataset_id,
-            grade=grade,
+            grade=final_grade,
             front_path=line["front"],
             back_path=line["back"],
             sha256_front=saved_front.sha256_hex,
             sha256_back=saved_back.sha256_hex,
             indexed=True,
+            duplicate=False,
         )
 
     @app.exception_handler(HTTPException)
