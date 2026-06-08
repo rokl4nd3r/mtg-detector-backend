@@ -9,7 +9,12 @@ class UploadMeta(BaseModel):
     seq: Optional[int] = Field(default=None)
     ts: Optional[str] = Field(default=None)
 
+    capture_id: Optional[str] = Field(default=None)
+
     grade: str = Field(description="nm|sp|mp|hp|damaged")
+    front_grade: Optional[str] = None
+    back_grade: Optional[str] = None
+    final_grade: Optional[str] = None
     extra: Dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
@@ -27,14 +32,23 @@ class UploadMeta(BaseModel):
         device = str(obj.pop("device", "unknown"))
         seq = obj.pop("seq", None)
         ts = obj.pop("ts", None)
+        capture_id = obj.pop("capture_id", None)
+        if capture_id is None:
+            capture_id = obj.pop("captureId", None)
 
         grade = obj.pop("grade", None)
+        if grade is None:
+            grade = obj.pop("final_grade", None)
         if grade is None:
             grade = obj.pop("condition", None)
         if grade is None:
             grade = obj.pop("label", None)
         if grade is None:
-            raise ValueError("meta must include grade (or condition/label)")
+            raise ValueError("meta must include grade (or final_grade/condition/label)")
+
+        front_grade = obj.pop("front_grade", None)
+        back_grade = obj.pop("back_grade", None)
+        final_grade = obj.pop("final_grade", None)
 
         if seq is not None:
             try:
@@ -42,7 +56,17 @@ class UploadMeta(BaseModel):
             except Exception:
                 seq = None
 
-        return cls(device=device, seq=seq, ts=ts, grade=str(grade), extra=obj)
+        return cls(
+            device=device,
+            seq=seq,
+            ts=ts,
+            capture_id=str(capture_id) if capture_id is not None else None,
+            grade=str(grade),
+            front_grade=str(front_grade) if front_grade is not None else None,
+            back_grade=str(back_grade) if back_grade is not None else None,
+            final_grade=str(final_grade) if final_grade is not None else None,
+            extra=obj,
+        )
 
 
 class UploadResponse(BaseModel):
@@ -54,3 +78,4 @@ class UploadResponse(BaseModel):
     sha256_front: str
     sha256_back: str
     indexed: bool = True
+    duplicate: bool = False
